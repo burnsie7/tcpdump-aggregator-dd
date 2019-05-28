@@ -2,11 +2,10 @@ import sys, os, re, time, datetime, threading, socket, json
 from subprocess import Popen, PIPE, STDOUT
 from collections import namedtuple, OrderedDict
 import linecache, traceback
-import requests
 import json
 
 # Crontab
-# @reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 | python /home/ubuntu/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
+# @reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
 
 args = sys.argv[1:]
 utc_delta = datetime.datetime.utcnow() - datetime.datetime.now()
@@ -28,10 +27,17 @@ def get_datadog_ips():
     dd_ips = {}
     raw_ip_ranges = {}
 
-    res = requests.get(dd_url)
-    if res and res.status_code == 200:
-        raw_ip_ranges = res.json()
-    else:
+    res = None
+    try:
+        import requests
+        res = requests.get(dd_url)
+        if res and res.status_code == 200:
+            raw_ip_ranges = res.json()
+    except ImportError:
+        print("Cannot import requests module")
+
+    if not res:
+        print("Building ip ranges from ip-ranges.json, this list may be out of date")
         with open('ip-ranges.json', 'r') as f:
             raw_ip_ranges = json.load(f)
 
@@ -40,14 +46,14 @@ def get_datadog_ips():
             ips = v.get('prefixes_ipv4', None)
             parsed_ips = []
             for ip in ips:
-                parsed_ips.append(ip.rstrip('/32'))
+                parsed_ips.append(ip.replace("/32", ""))
             dd_ips[k] = parsed_ips
     return dd_ips
 
 datadog_ips = get_datadog_ips()
 if not datadog_ips:
     print("Cannot load datadog ip ranges, exiting")
-    raise SystemExit
+    sys.exit(1)
 
 def get_exception_message(append_message = ''):
   """Obtain and return exception message"""
@@ -237,12 +243,18 @@ class Packet_Aggregate:
 
       source_ip = str(combo_record['source_IP'])
       target_ip = str(combo_record['target_IP'])
-      datadog_service = "NONE"
+      datadog_service = "none"
+      packet_flow = "none"
 
       for service, ips in datadog_ips.items():
-          if source_ip in ips or target_ip in ips:
+          if target_ip in ips:
               datadog_service = service
+              packet_flow = "outgoing"
+          elif source_ip in ips:
+              datadog_service = service
+              packet_flow = "incoming"
       combo_record['datadog_service'] = datadog_service
+      combo_record['packet_flow'] = packet_flow
 
       self.UPD_sock.sendto(json.dumps(combo_record), (server, port))
 
