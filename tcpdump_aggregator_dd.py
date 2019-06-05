@@ -4,6 +4,9 @@ from collections import namedtuple, OrderedDict
 import linecache, traceback
 import json
 
+# Uncomment to send via statsd instead of logs
+# from datadog import statsd
+
 # Crontab
 # @reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
 
@@ -256,6 +259,9 @@ class Packet_Aggregate:
       combo_record['datadog_service'] = datadog_service
       combo_record['packet_flow'] = packet_flow
 
+      # Uncomment to submit as metrics instead of logs
+      # tags = ['datadog_service:'+datadog_service, 'packet_flow:'+packet_flow]
+      # statsd.increment('datadog.tcp_dump.bytes', combo_record['length'], tags=tags)
       self.UPD_sock.sendto(json.dumps(combo_record), (server, port))
 
 
