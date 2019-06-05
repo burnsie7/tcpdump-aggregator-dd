@@ -8,6 +8,7 @@ This allows one to capture a host's network traffic statistics:
   - Source IP/Host/Port to Target IP/Host/Port
   - Aggregate count of packets over time
   - Aggregate length of packets over time
+  - Datadog service (agents/api/apm/logs/process)
 
 # Instructions
 
@@ -36,13 +37,13 @@ cd tcpdump-aggregator-dd
 
 To start collecting tcpdump statistics, run the following on the host:
 ```
-tcpdump -U -i eth0 -nn -tttt port not 10518 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
+tcpdump -U -i eth0 -nn -tttt port not 10518 and port not 22 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
  ```
 
 To run as cron job at reboot:
 
 ```
-@reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
+@reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 and port not 22 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
 ```
 
 In the example above, the tcpdump aggregates will be sent over to host 127.0.0.1 / port 10518 via UDP every interval specified (in the script - default 10 sec).
