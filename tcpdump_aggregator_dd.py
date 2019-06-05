@@ -1,14 +1,12 @@
-import sys, os, re, time, datetime, threading, socket, json
+import select, sys, os, re, time, datetime, threading, signal, socket, json
 from subprocess import Popen, PIPE, STDOUT
 from collections import namedtuple, OrderedDict
 import linecache, traceback
-import json
 
-# Uncomment to send via statsd instead of logs
-# from datadog import statsd
+#from datadog import statsd
 
 # Crontab
-# @reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
+# @reboot /usr/sbin/tcpdump -U -i eth0 -nn -tttt port not 10518 and port not 22 | python /path/to/tcpdump-aggregator-dd/tcpdump_aggregator_dd.py "127.0.0.1:10518"
 
 args = sys.argv[1:]
 utc_delta = datetime.datetime.utcnow() - datetime.datetime.now()
@@ -44,13 +42,12 @@ def get_datadog_ips():
         with open('ip-ranges.json', 'r') as f:
             raw_ip_ranges = json.load(f)
 
-    for k, v in raw_ip_ranges.items():
-        if isinstance(v, dict):
-            ips = v.get('prefixes_ipv4', None)
+    for service, values in raw_ip_ranges.items():
+        if isinstance(values, dict):
+            ips = values.get('prefixes_ipv4', None)
             parsed_ips = []
             for ip in ips:
-                parsed_ips.append(ip.replace("/32", ""))
-            dd_ips[k] = parsed_ips
+                dd_ips[ip.replace("/32", "")] = service
     return dd_ips
 
 datadog_ips = get_datadog_ips()
@@ -132,7 +129,6 @@ def get_host(IP):
 
   return IP
 
-
 def get_host_process(IP):
   """Tread to obtain the host name of the IP"""
   global host_cache, thread_lock
@@ -143,7 +139,6 @@ def get_host_process(IP):
     host = 'NXDOMAIN'
   with thread_lock:
     host_cache[IP] = host
-
 
 def parse_packet(line):
   """
@@ -181,15 +176,13 @@ def parse_packet(line):
   else:
     packet['type'] = 'TCP'
 
-  # convert to UTC time for MongoDB
-  packet['time'] = packet['time'] + datetime.timedelta(seconds=round(utc_delta.total_seconds()))
-
-
   (packet['source_IP'], packet['source_PORT']) = parse_ip_port(source)
   (packet['target_IP'], packet['target_PORT']) = parse_ip_port(target)
 
-  packet['source_HOST'] = get_host(packet['source_IP'])
+  # convert to UTC time for MongoDB
+  # packet['time'] = packet['time'] + datetime.timedelta(seconds=round(utc_delta.total_seconds()))
 
+  packet['source_HOST'] = get_host(packet['source_IP'])
   packet['target_HOST'] = get_host(packet['target_IP'])
 
   for k in 'flags seq ack win'.split():
@@ -231,7 +224,7 @@ class Packet_Aggregate:
       target_HOST = packet['target_HOST'],
     )
 
-  def send_udp(self, server, port):
+  def send_udp(self, server, port, time_marker):
     time = str(datetime.datetime.utcnow())
 
     for combo, count in self.combo_count.iteritems():
@@ -249,19 +242,19 @@ class Packet_Aggregate:
       datadog_service = "none"
       packet_flow = "none"
 
-      for service, ips in datadog_ips.items():
-          if target_ip in ips:
-              datadog_service = service
-              packet_flow = "outgoing"
-          elif source_ip in ips:
-              datadog_service = service
-              packet_flow = "incoming"
+      if target_ip in datadog_ips:
+          datadog_service = datadog_ips[target_ip]
+          packet_flow = "outgoing"
+      elif source_ip in datadog_ips:
+          datadog_service = datadog_ips[source_ip]
+          packet_flow = "incoming"
+
       combo_record['datadog_service'] = datadog_service
       combo_record['packet_flow'] = packet_flow
 
-      # Uncomment to submit as metrics instead of logs
-      # tags = ['datadog_service:'+datadog_service, 'packet_flow:'+packet_flow]
-      # statsd.increment('datadog.tcp_dump.bytes', combo_record['length'], tags=tags)
+      #submit using statsd instead of logs
+      #tags = ['datadog_service:'+datadog_service, 'packet_flow:'+packet_flow]
+      #statsd.increment('datadog.tcp_dump.bytes', combo_record['length'], tags=tags)
       self.UPD_sock.sendto(json.dumps(combo_record), (server, port))
 
 
@@ -270,28 +263,35 @@ def main_buffer():
 
 
   line_count = 0
-  all_packets = []
   update_time_marker = lambda: datetime.datetime.now() + datetime.timedelta(seconds=SEC_INTERVAL)
+  update_time_start = lambda: datetime.datetime.now()
 
-  time_marker = update_time_marker()
   aggregate = Packet_Aggregate()
 
   UPD_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
 
+  time_marker = update_time_marker()
+  time_start = update_time_start()
+
   print("Running packet capture live with Aggregate...")
 
-  for line in sys.stdin:
-    line_count += 1
-    packet = parse_packet(line)
-    if not packet:
-      continue
-
-    aggregate.ingest(packet)
-
-    if datetime.datetime.now() > time_marker:
-      aggregate.send_udp(UDP_IP, UDP_PORT)
-      aggregate = Packet_Aggregate()
-      time_marker = update_time_marker()
+  while True:
+      # TODO: select([sys.stdin]) does not work on windows. use a different non-blocking method.
+      while sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+          line = sys.stdin.readline()
+          line_count += 1
+          packet = parse_packet(line)
+          if not packet:
+            continue
+          aggregate.ingest(packet)
+      if datetime.datetime.now() > time_marker:
+        start_submit = datetime.datetime.now()
+        # print('Actual Interval = %r' % (start_submit - time_start).total_seconds())
+        aggregate.send_udp(UDP_IP, UDP_PORT, time_marker)
+        aggregate = Packet_Aggregate()
+        time_marker = update_time_marker()
+        time_start = update_time_start()
+        # print('Submit Duration = %r' % (datetime.datetime.now() - start_submit).total_seconds())
 
 
 try:
